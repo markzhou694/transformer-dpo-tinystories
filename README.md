@@ -20,7 +20,7 @@ Includes K-Gram MLP and LSTM baselines for comparison.
 
 ## My Contributions
 
-This was a 2-person team project. My specific contributions:
+This was a 4-person team project. My specific contributions:
 
 - **K-Gram MLP model** (Cell 3, Section 3): wrote the full 
   `KGramMLPSeqModel` including a vectorized forward pass that builds 
