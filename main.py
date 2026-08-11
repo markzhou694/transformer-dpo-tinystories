@@ -6,7 +6,11 @@ import torch
 from datasets import load_dataset
 
 from pico_llm.data import MixedSequenceDataset, seq_collate_fn
-from pico_llm.dpo import PreferenceDataset, dpo_collate_fn, train_dpo
+from pico_llm.dpo import (
+    load_dpo_data,
+    prepare_dpo_dataset_with_openai,
+    train_dpo,
+)
 from pico_llm.generation import generate_text, simple_search
 from pico_llm.models import KGramMLPSeqModel, LSTMSeqModel, TransformerModel
 from pico_llm.plotting import plot_train_test_loss_curves
@@ -30,6 +34,18 @@ def parse_args():#Parses command-line arguments (e.g., embedding size, block siz
     parser.add_argument("--n_heads", type=int, default= 8)
     parser.add_argument("--n_blocks", type=int, default=8)
     parser.add_argument("--device_id", type=str, default="cuda:0")
+    parser.add_argument("--dpo_data_file", default="dpo_dataset_1000.json")
+    parser.add_argument("--dpo_samples", type=int, default=500)
+    parser.add_argument("--dpo_epochs", type=int, default=3)
+    parser.add_argument("--dpo_lr", type=float, default=3e-8)
+    parser.add_argument("--dpo_beta", type=float, default=0.06)
+    parser.add_argument("--skip_dpo", action="store_true")
+    parser.add_argument(
+        "--generate_dpo_data",
+        action="store_true",
+        help="Generate GPT preference data only when the cache file is missing.",
+    )
+    parser.add_argument("--dpo_total_pairs", type=int, default=1000)
     args = parser.parse_args()
     return args
 
@@ -211,44 +227,73 @@ def main():
     # === START DPO ALIGNMENT STEP ===
     # ==========================================
 
-    # We only apply DPO to the Transformer model as requested
-    if "transformer" in models:
+    if "transformer" in models and not args.skip_dpo:
         print("\n=== Starting DPO (Alignment) Phase for Transformer ===")
 
-        # 1. Create the Reference Model (Frozen Copy)
-        # Deepcopy the model currently in GPU memory
-        ref_model = copy.deepcopy(transformer)
-        ref_model.to(device)
-        ref_model.eval()
-        # Freeze parameters of reference model to save memory/computation
-        for param in ref_model.parameters():
-            param.requires_grad = False
+        # Prefer the cached GPT-generated prompt/chosen/rejected records.
+        dpo_data = load_dpo_data(args.dpo_data_file)
 
-        # 2. Prepare Preference Data
-        # Since we don't have an external preference dataset, we create a synthetic one
-        # using the TinyStories data we already loaded.
-        # Ideally, 'chosen' is high quality and 'rejected' is low quality.
-        dpo_dataset = PreferenceDataset(tinystories_seqs[:2000]) # Use subset for speed
-        dpo_loader = torch.utils.data.DataLoader(
-            dpo_dataset,
-            batch_size=8, # Smaller batch size for DPO due to double forward pass
-            shuffle=True,
-            collate_fn=dpo_collate_fn
-        )
+        # API calls happen only when the user explicitly requests generation.
+        if dpo_data is None and args.generate_dpo_data:
+            print(f"Generating {args.dpo_total_pairs} GPT preference pairs...")
+            dpo_data = prepare_dpo_dataset_with_openai(
+                num_examples=args.dpo_total_pairs,
+                max_prompt_len=40,
+                max_completion_len=70,
+                use_cache=True,
+                cache_file=args.dpo_data_file,
+            )
 
-        # 3. Run DPO Training
-        # We use a much smaller learning rate (1e-5 or 5e-6) to avoid breaking the model
-        train_dpo(transformer, ref_model, dpo_loader, epochs=1, device=device, lr=5e-6, beta=0.1)
+        if dpo_data is None:
+            print(
+                f"DPO data file not found: {args.dpo_data_file}\n"
+                "Skipping DPO. Provide the saved JSON file or use "
+                "--generate_dpo_data to create it explicitly."
+            )
+        else:
+            sample_count = min(args.dpo_samples, len(dpo_data))
+            selected_dpo_data = dpo_data[:sample_count]
+            print(
+                f"Using {sample_count} of {len(dpo_data)} "
+                "GPT-generated preference pairs."
+            )
 
-        # 4. Evaluate Post-DPO
-        print("\n[DPO] Generating text after alignment:")
-        with torch.no_grad():
-             text_dpo, _ = generate_text(transformer, enc, args.prompt, max_new_tokens=30, device=device)
-        print(f"[Post-DPO] Sample: {text_dpo}")
+            # The reference model is a frozen copy of the pretrained model.
+            ref_model = copy.deepcopy(transformer).to(device)
+            ref_model.eval()
+            for param in ref_model.parameters():
+                param.requires_grad_(False)
 
-        # Clean up ref model to free memory
-        del ref_model
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            dpo_losses = train_dpo(
+                policy_model=transformer,
+                ref_model=ref_model,
+                dpo_data=selected_dpo_data,
+                epochs=args.dpo_epochs,
+                device=device,
+                lr=args.dpo_lr,
+                beta=args.dpo_beta,
+            )
+
+            if dpo_losses:
+                print(
+                    f"DPO loss: {dpo_losses[0]:.4f} "
+                    f"-> {dpo_losses[-1]:.4f}"
+                )
+
+            print("\n[DPO] Generating text after alignment:")
+            with torch.no_grad():
+                text_dpo, _ = generate_text(
+                    transformer,
+                    enc,
+                    args.prompt,
+                    max_new_tokens=30,
+                    device=device,
+                )
+            print(f"[Post-DPO] Sample: {text_dpo}")
+
+            del ref_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ==========================================
     # === END DPO ALIGNMENT STEP ===
