@@ -1,4 +1,4 @@
-# Transformer Language Model with DPO Alignment
+# Transformer Language Model with DPO Alignment (tinystories-transformer-dpo)
 
 Group final project — NYU Courant, Fall 2025  
 Course taught by Prof. Matus Telgarsky
