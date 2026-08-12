@@ -1,54 +1,76 @@
 # Transformer Language Model with DPO Alignment
 
-Group final project — NYU Courant, Fall 2025.  
-Course taught by Prof. Matus Telgarsky.
+Group final project — NYU Courant, Fall 2025  
+Course taught by Prof. Matus Telgarsky
 
-A decoder-only Transformer language model trained on TinyStories, 
-followed by a Direct Preference Optimization (DPO) alignment pipeline. 
-Includes K-Gram MLP and LSTM baselines for comparison.
+This project trained a decoder-only Transformer language model on TinyStories,
+followed by a Direct Preference Optimization (DPO) alignment stage. We also
+implemented K-gram MLP and LSTM baselines for comparison.
 
 ## Project Overview
 
-- Decoder-only Transformer in PyTorch (multi-head self-attention, 
-  RMSNorm, causal masking, top-p / nucleus sampling)
-- Baselines: K-Gram MLP and LSTM on TinyStories
-- DPO alignment pipeline: reference model freezing, per-sequence 
-  log-probability computation, DPO loss with numerical-stability 
-  tricks (`F.logsigmoid`)
-- Embedding-dimension ablation (512 / 1024 / 2048) with 90/10 
+- Decoder-only Transformer in PyTorch with multi-head self-attention, RMSNorm,
+  causal masking, and top-p sampling
+- K-gram MLP and LSTM baselines trained on TinyStories
+- Next-token prediction, training, evaluation, and text generation pipeline
+- GPT-generated preference pairs for DPO
+- Frozen reference model, sequence log-probability calculation, and DPO loss
+  implemented with `F.logsigmoid`
+- Embedding-dimension experiments at 512, 1024, and 2048 with a 90/10
   train/test split
 
 ## My Contributions
 
-This was a 4-person team project. My specific contributions:
+This was a four-person team project. My main contributions were:
 
-- **K-Gram MLP model** (Cell 3, Section 3): wrote the full 
-  `KGramMLPSeqModel` including a vectorized forward pass that builds 
-  per-token context windows via index gather + one-hot encoding, 
-  avoiding the explicit Python loop in the starter formulation.
-- **DPO alignment framework** (Cell 2): wrote the main DPO pipeline 
-  — `get_batch_logps` for per-sequence log-probability computation 
-  with proper logit/label shifting, the DPO loss using `F.logsigmoid` 
-  for numerical stability, the synthetic `PreferenceDataset`, the 
-  `dpo_collate_fn`, and the `train_dpo` training loop with frozen 
-  reference model.
-- **All training runs**: ran the full pre-training pipeline for all 
-  three models (K-Gram MLP, LSTM, Transformer) on TinyStories, plus 
-  the post-pretraining DPO alignment run on the Transformer.
-- **Embedding-dimension ablation** (marked with `#XIAODI` in 
-  Cell 3): trained at 512 / 1024 / 2048 with a 90/10 train/test 
-  split, analyzing the effect of model capacity on language-modeling 
-  performance.
-- **Transformer (Cell 3, Section 5)**: my teammate authored the main 
-  architecture; my role was verification, edits, and integration 
-  with the rest of the pipeline.
+- **K-gram MLP:** implemented the full `KGramMLPSeqModel`, including a
+  vectorized forward pass that constructs per-token context windows through
+  index gathering and one-hot encoding.
+- **DPO framework:** implemented the sequence log-probability calculation,
+  DPO objective, frozen reference-model setup, preference-data processing, and
+  DPO training loop.
+- **GPT preference data:** sampled prompts from TinyStories and used GPT to
+  generate a clearer `chosen` completion and a flatter `rejected` completion
+  from the same prompt.
+- **All training runs:** ran the complete training pipeline for the K-gram
+  MLP, LSTM, and Transformer, as well as the DPO fine-tuning run.
+- **Embedding-dimension experiments:** trained the models with embedding sizes
+  of 512, 1024, and 2048 and compared their language-modeling behavior.
+- **Transformer integration:** verified and edited the Transformer code and
+  integrated it with the data, training, evaluation, generation, and DPO
+  pipelines.
 
-My teammate's contributions: the LSTM model (Cell 3, Section 4), 
-the Transformer architecture, and assistance with debugging and 
-hyperparameter tuning.
+The main Transformer architecture and LSTM implementation were written by a
+teammate. Other team work included debugging and hyperparameter tuning.
 
-## Notes on the DPO Setup
+## DPO Setup
 
-Without an external preference dataset (e.g. UltraFeedback, HH-RLHF), 
-preference pairs are constructed synthetically by treating two 
-r
+The original TinyStories text was used as the source of prompts. For each
+preference example, the first 40 tokens of a sampled story were used as the
+prompt. GPT then generated two completions from that same prompt:
+
+- `chosen`: clearer, smoother, and more detailed
+- `rejected`: simpler, flatter, and less engaging
+
+The generated data was tokenized with the GPT-2 tokenizer and stored as
+`prompt`, `chosen`, and `rejected` token sequences. A total of 1,000 preference
+pairs were generated and cached in JSON format.
+
+For DPO training, the pretrained Transformer was used as the policy model and
+a frozen copy was used as the reference model. I trained on 500 of the 1,000
+preference pairs for three epochs, giving 1,500 optimization steps. The
+recorded DPO training loss decreased from 0.6931 to 0.3627.
+
+This loss reduction shows that the policy learned the training preferences,
+but it is not a complete alignment evaluation because there was no separate
+held-out preference benchmark.
+
+## Code Structure
+
+- `main.py` — full training, evaluation, generation, and DPO experiment
+- `pico_llm/models.py` — K-gram MLP, LSTM, RMSNorm, and Transformer models
+- `pico_llm/data.py` — dataset handling and sequence padding
+- `pico_llm/training.py` — next-token loss, training, and evaluation
+- `pico_llm/generation.py` — greedy decoding and top-p sampling
+- `pico_llm/dpo.py` — GPT preference generation and DPO training
+- `pico_llm/plotting.py` — training and test loss visualization
